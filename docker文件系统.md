@@ -1,7 +1,7 @@
 #docker文件系统
 
 ##介绍
-[docker-filesystems-generic](!docker-filesystems-generic.png)
+![docker-filesystems-generic](docker-filesystems-generic.png)
 
 为了可以让内核跑起来，通常需要两种[文件系统](http://en.wikipedia.org/wiki/Filesystem).
 1 boot文件系统(bootfs,引导文件系统)
@@ -14,4 +14,4 @@ boot文件系统包括引导程序(bootloader)和内核。用户无法改变boot
 
 但是不同的linux发行套件之间内核的区别很大。根文件系统的内容以及组织因发行套件不同而导致你的软件包的不同。 docker通过同时运行多个发行套件可以解决这个问题。
 
-[docker-filesystems-multiroot](!docker-filesystems-multiroot.png)
+![docker-filesystems-multiroot](docker-filesystems-multiroot.png)
