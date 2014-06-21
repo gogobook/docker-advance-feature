@@ -253,7 +253,7 @@ $ sudo ip link add A type veth peer name B
 $ sudo brctl addif docker0 A
 $ sudo ip link set A up
 
-# Place B inside the container's network namespace,
+# Place B inside the containers network namespace,
 # rename to eth0, and activate it with a free IP
 
 $ sudo ip link set B netns $pid
