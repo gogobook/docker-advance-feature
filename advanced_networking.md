@@ -223,12 +223,11 @@ $ sudo service docker start
 * `--net=none` ——将container的网络创建在docker所在的网络栈，但是不进行任何的配置。让用户完全自定义。
 　　如果你使用`--net=none`,下面这些步骤可以的帮你创建跟docker默认基本一样的网络配置。
 <pre>
-# At one shell, start a container and
-# leave its shell idle and running
+#At one shell, start a container and
+#leave its shell idle and running
 
 $ sudo docker run -i -t --rm --net=none base /bin/bash
 root@63f36fc01b5f:/#
-
 # At another shell, learn the container process ID
 # and create its namespace entry in /var/run/netns/
 # for the "ip netns" command we will be using below
