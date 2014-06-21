@@ -222,7 +222,9 @@ $ sudo service docker start
 * `--net=container:NAME_or_ID` ——告知docker将进程创建在其他的container的网络栈里面。两个container共享ip地址和端口。通过环回地址也能相互通信。
 * `--net=none` ——将container的网络创建在docker所在的网络栈，但是不进行任何的配置。让用户完全自定义。
 　　如果你使用`--net=none`,下面这些步骤可以的帮你创建跟docker默认基本一样的网络配置。
+
 <pre>
+
 #At one shell, start a container and
 #leave its shell idle and running
 
@@ -259,6 +261,7 @@ $ sudo ip netns exec $pid ip link set dev B name eth0
 $ sudo ip netns exec $pid ip link set eth0 up
 $ sudo ip netns exec $pid ip addr add 172.17.42.99/16 dev eth0
 $ sudo ip netns exec $pid ip route add default via 172.17.42.1
+
 </pre>
 　　
 
