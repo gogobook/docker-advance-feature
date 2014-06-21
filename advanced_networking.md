@@ -141,11 +141,128 @@ DNAT       tcp  --  0.0.0.0/0            0.0.0.0/0            tcp dpt:80 to:172.
     在ubuntu上，可以添加这些选项到`/etc/default/docker.io`。
 
 　　`brctl`命令可以帮你看到你的container是否正确的连接到`docker0`。在宿主机器上执行`brctl`，在`interfaces`这一列可以看到网桥上的连接的接口。
-　　
+   下面是一个有２个container的机器。
+<pre>
+# Display bridge info
+
+$ sudo brctl show
+bridge name     bridge id               STP enabled     interfaces
+docker0         8000.3a1d7362b4ee       no              veth65f9
+                                                        vethdda6
+</pre>　
+
+    在docket主机上如果没有brew命令，并且你的系统是ubuntu的，`sudo apt-get install bridge-utils`来安装。
+　　最后，`docker0`在每次创建container的时候都，在网桥构成的子网里面选择一个可用的ip，在端口eth0上设置对应的ip和掩码。这个ip也是container访问外网的网关。
+<pre>
+# The network, as seen from a container
+
+$ sudo docker run -i -t --rm base /bin/bash
+
+$$ ip addr show eth0
+24: eth0: <BROADCAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000
+    link/ether 32:6f:e0:35:57:91 brd ff:ff:ff:ff:ff:ff
+    inet 172.17.0.3/16 scope global eth0
+       valid_lft forever preferred_lft forever
+    inet6 fe80::306f:e0ff:fe35:5791/64 scope link
+       valid_lft forever preferred_lft forever
+
+$$ ip route
+default via 172.17.42.1 dev eth0
+172.17.0.0/16 dev eth0  proto kernel  scope link  src 172.17.0.3
+
+$$ exit
+</pre>
+记住，设置宿主机的`ip_forward`为１才能转发container的数据包。
+
 ## 绑定container到你自己的网桥上
+　　如果你不需要docker给你创建网桥，那么通过`-b BRIDGE` 或者 `--bridge=BRIDGE`指定你的网桥。已经运行的使用网桥docker0的docker server可以通过下面的方式来停止服务并且移除接口docker0.
+<pre>
+# Stopping Docker and removing docker0
+
+$ sudo service docker stop
+$ sudo ip link set dev docker0 down
+$ sudo brctl delbr docker0
+</pre>
+　　在启动docker server之前，创建你的网桥，并且配置。下面我们创建一个足够简单的网桥，就像我们先前自定义的`docker0`。但是足够说明这个技巧。
+<pre>
+# Create our own bridge
+
+$ sudo brctl addbr bridge0
+$ sudo ip addr add 192.168.5.1/24 dev bridge0
+$ sudo ip link set dev bridge0 up
+
+# Confirming that our bridge is up and running
+
+$ ip addr show bridge0
+4: bridge0: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state UP group default
+    link/ether 66:38:d0:0d:76:18 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.5.1/24 scope global bridge0
+       valid_lft forever preferred_lft forever
+
+# Tell Docker about it and restart (on Ubuntu)
+
+$ echo 'DOCKER_OPTS="-b=bridge0"' >> /etc/default/docker
+$ sudo service docker start
+</pre>
+　　启动docker，并且创建一个container,你将看到container的ip是在你指定的ip段内的。
 
 ## 配置一个container的网络
+　　docker目前处于活跃的开发之中，会不断的调整网络配置逻辑。这一节通过shell命令大致的描叙了docker新建container的过程中网络配置的步骤。
+　　先回顾一些基本的概念。
+　　使用IP通信，一个主机至少需要要连接上一个可以转发数据包的网络接口，一个定义接口可到达的IP地址段的路由表。网络接口不一定是物理设备。实际上,`lo`环回接口就是虚拟的，它仅仅从内存中拷贝发送者的数据到接受者。
+　　docker使用特别的虚拟接口使得container可以跟主机通信——一对叫做`peers`的虚拟接口连接在主机的内核，数据包通过它传输。下面就是docker配置网络的简单步骤：
+1, 创建一对虚拟接口
+2, 给其中一端，取唯一名，如`veth65f9`，绑定到`docker0`或者用户自定义的网桥上。
+3, Toss the other interface over the wall into the new container (which will already have been provided with an lo interface) and rename it to the much prettier name eth0 since, inside of the container’s separate and unique network interface namespace, there are no physical interfaces with which this name could collide.
+
+4, Give the container’s eth0 a new IP address from within the bridge’s range of network addresses, and set its default route to the IP address that the Docker host owns on the bridge.
+　　当然你也可以不使用上面的步骤来创建。在docker run的时候配置`--net=`,它有四个值。
+* `--net=bridge` ——默认值
+* `--net=host` ——不设置单独的网络栈。本质上，这个选项是告诉docker不要去容器化container的网络配置。`ip addr`可以发现，container可以直接访问宿主机所在的网络接口。`--privileged=true`设置后，container就可以对网络栈进行重新配置。但是container进程也不能像其他root进程一样打开低位的端口。
+* `--net=container:NAME_or_ID` ——告知docker将进程创建在其他的container的网络栈里面。两个container共享ip地址和端口。通过环回地址也能相互通信。
+* `--net=none` ——将container的网络创建在docker所在的网络栈，但是不进行任何的配置。让用户完全自定义。
+　　如果你使用`--net=none`,下面这些步骤可以的帮你创建跟docker默认基本一样的网络配置。
+<pre>
+# At one shell, start a container and
+# leave its shell idle and running
+
+$ sudo docker run -i -t --rm --net=none base /bin/bash
+root@63f36fc01b5f:/#
+
+# At another shell, learn the container process ID
+# and create its namespace entry in /var/run/netns/
+# for the "ip netns" command we will be using below
+
+$ sudo docker inspect -f '{{.State.Pid}}' 63f36fc01b5f
+2778
+$ pid=2778
+$ sudo mkdir -p /var/run/netns
+$ sudo ln -s /proc/$pid/ns/net /var/run/netns/$pid
+
+# Check the bridge’s IP address and netmask
+
+$ ip addr show docker0
+21: docker0: ...
+inet 172.17.42.1/16 scope global docker0
+...
+# Create a pair of "peer" interfaces A and B,
+# bind the A end to the bridge, and bring it up
+
+$ sudo ip link add A type veth peer name B
+$ sudo brctl addif docker0 A
+$ sudo ip link set A up
+
+# Place B inside the container's network namespace,
+# rename to eth0, and activate it with a free IP
+
+$ sudo ip link set B netns $pid
+$ sudo ip netns exec $pid ip link set dev B name eth0
+$ sudo ip netns exec $pid ip link set eth0 up
+$ sudo ip netns exec $pid ip addr add 172.17.42.99/16 dev eth0
+$ sudo ip netns exec $pid ip route add default via 172.17.42.1
+</pre>
+　　
 
 ## 创建一个p2p连接
-
+    
 
