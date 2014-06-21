@@ -1,6 +1,6 @@
 #镜像
 ## 介绍
-[image](!docker-filesystems-debian.png)
+![image](docker-filesystems-debian.png)
 
 在docker的术语中，一个只读的[分层](https://github.com/duanbing/docker-advance-feature/blob/master/docker%E5%88%86%E5%B1%82%E6%9E%B6%E6%9E%84.md)被称之为镜像(image)。一个镜像永远不会被改变。
 
