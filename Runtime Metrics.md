@@ -122,3 +122,87 @@ I/O操作数，如上也有四个值。
 IO操作的当前的缓存队列。如果一个cgroup不做任何I/O操作，这些都是0。相反的情况，如果没有IO队列，不意味着cgroup是空闲的，它也许单纯的在quiescent device同步读，这种可以被立即处理，因此不需要缓存队列。但是他有助于描叙cgroup在I/O子系统中压力大小。记住这个只是相对大小。即使一个cgroup的进程不是用很多I/O操作，但是它的队列长度也能随着其他设备负载的上升而增加。
 
 ##Network Metrics
+cgroup并不直接显示网络使用情况。因为网络接口存在网络命名空间的上下文中。内核可以计算cgroup进程发送以及被接受的包和字节。但是这个数据并不是游泳。你需要每个接口的度量（因为本地环回接口lo并不是真正计算在内）。但是因为进程在单个cgroup属于多个网络命名空间，这些度量就很难被说清楚：多个网络命名空间意味着多个lo接口，多个eth0接口等，一次这也是cgroup很难统计网络度量的原因。
+
+但是，仍然是有办法获得cgroup的网络度量
+
+### iptables
+
+iptables（倒不如说是netfilter架构，iptables只是一个接口）可以做一些统计。
+
+例如，你可以设置一个规则来计算webserver上出站的http流量，
+<pre>
+$ iptables -I OUTPUT -p tcp --sport 80
+</pre>
+
+没有`-j`或者`-g`标记，因此规则仅仅过滤符合规则的包然后进行运行下一个规则。
+
+然后让我们来检查一下OUTPUT链上的流量
+<pre>
+$ iptables -nxvL OUTPUT
+</pre>
+`-n`并不是必须的，但是他能防止iptable的反向dns查询（由主机名获得主机IP），这通常不需要查询。
+
+计数包括包和字节。如果你想设置container的流量的配额，你可以执行for循环来给每个container的ip地址添加2条iptables FORWARD规则，这仅仅测量的是通过nat层的流量。并且你必须设置通过用户代理的流量。
+
+然后，你定期的检测这些技术，如果你使用`collectd`，[nice plugin](https://collectd.org/wiki/index.php/Plugin:IPTables)是个非常不错的自动收集iptables计数器的工具。
+
+###接口级别的计数器
+因为每个从他都有一个虚拟的以太网网卡，你可以能想直接里检测TX和RX的技术。可以发现每个从他都关联在宿主机器上一个虚拟的以太网接口，名字类似于`vethKk8Zqi`。知道那个接口对应哪个container不是一件容易的事情啊。
+
+但是现在最好的方式是先检查container的资源配额。为了做到这个，你可以在主机的环境里面运行一个可执行程序，使用 ip-netns magic 来创建container的网络命名空间。
+
+` ip-netns exec`命令可以让你在指定的网络命名空间运行指定的程序。这意味这你的主机可以进入container所在的网络命名空间，但是你的container缺无法访问主机或者说兄弟container。container可以看到或者影响到子container。
+
+命令行为
+<pre>
+$ ip netns exec <nsname> <command...>
+</pre>
+例如，
+<pre>
+$ ip netns exec mycontainer netstat -i
+</pre>
+ip netns 通过命名空间的伪文件来找到“mycontainer”这个container，每个进程属于不同的网络、PID,mnt等的命名空间。并且物化在`/proc/<pid>/ns/`。
+
+当你运行`ip netns exec mycontainer`,他需要将`/var/run/netns/mycontainer`挂在`/proc/<pid>/ns/`下面，即使是软链。
+
+因此，要想在一个container的网络命名空间执行一个命令，需要：
+
+* 找出container里面我们想检查的进程的pid
+* 创建一个软链，从`/var/run/netns/<somename>`到`/proc/<thepid>/ns/net`
+* 执行`ip netns exec <somename> ....`
+
+请回顾一下上面的章节**Enumerating Cgroups **去了解怎么找到container里面的进程。你可以在伪文件里面找到tasks文件，里面存放的就是cgroup下的进程ID号。
+
+总结起来，$CID来表示一个container的ID，下面的脚本就能完整让你看到网络命名空间的使用情况。
+<pre>
+$ TASKS=/sys/fs/cgroup/devices/$CID*/tasks
+$ PID=$(head -n 1 $TASKS)
+$ mkdir -p /var/run/netns
+$ ln -sf /proc/$PID/ns/net /var/run/netns/$CID
+$ ip netns exec $CID netstat -i
+</pre>
+
+
+### 高效采集container性能指标的的建议
+
+如果你每次都创建一个进程来更新性能消耗情况的代价是很昂贵的。在高频率的采集或者大规模集群下面进行采集的时候，你没有必要每次都来fork进程做。
+
+下面介绍如何开单个进程进行采集。 你必须用c等比较靠近系统级别的语言来编写。使用特殊的内核调用`setns()`,它可以让当前进程进入任何一个网络命名空间，但是它需要一个网络命名空间中一个打开的伪文件(在`/proc/<pid>/ns/net`下面)的文件描叙符。
+
+但是，有一个注意点， 不允许保持这个文件描叙符是一直打开的。因为container里面所有的进程退出之后，命名空间也就被销毁，这些网络资源的释放就会一直等着这个文件描叙符的关闭而释放。
+
+因此正确的做法是记录每个container的/sbin/init（或者docker run指定的第一个执行命令的进程）。然后每次从新打开伪文件。
+
+### 在container退出的时候采集指标
+
+有时候，你指关心container退出的时候，container所消耗的所有的cpu，memroy等。
+
+docker是依赖于`lxc-start`，lxc会在退出后会进行仔细的释放消耗的资源，但是还是有可能做到的。常规的做法就是定期的去采集。
+
+
+对每个container，起一个采集进程，通过将其pid写到对应需要监控的container的tasks，将其移动到container内部，采集进程定期的去检查tasks文件，查看自己是不是最后一个进程了。
+
+当container退出的时候，`lxc-start`将删除整个进程控制组。但是如果还有存活进程，删除就会失败。这是，采集进程就会发现自己是最后一个存活的进程，这时，你就可以采集需要的资源指标了。
+
+最后，你的进程应该将自己移动到根进程控制组。然后删除当前的进程控制组。仅仅使用`rmdir`进程控制组的目录就行。这有点不符合直觉，但是记住这是一个伪文件系统，因此一般的规则是不适合的，当清理结束之后，采集进程就能安全的退出了。
